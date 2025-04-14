@@ -1,0 +1,104 @@
+//@version=5
+strategy("EMA + MACD + ATR Strategy (Single-Line Exit)", 
+     shorttitle="EMA+MACD+ATR",
+     overlay=true,
+     initial_capital=100000, 
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ░░░░░ INPUTS
+// ──────────────────────────────────────────────────────────────────────────────
+emaLength       = input.int(200, "EMA Length (Trend Filter)")
+fastMacdLength  = input.int(12, "MACD Fast Length")
+slowMacdLength  = input.int(26, "MACD Slow Length")
+signalMacdLength= input.int(9,  "MACD Signal Length")
+
+atrPeriod       = input.int(14, "ATR Period")
+atrMultiplierSL = input.float(1.5, "Stop-Loss ATR Multiplier")
+atrMultiplierTP = input.float(2.0, "Take-Profit ATR Multiplier", tooltip="Applied to the ATR value from entry.")
+useTakeProfit   = input.bool(true, "Use Fixed ATR Take-Profit?")
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ░░░░░ CALCULATIONS
+// ──────────────────────────────────────────────────────────────────────────────
+
+// 1. Trend Filter: 200 EMA
+emaValue     = ta.ema(close, emaLength)
+isBullTrend  = close > emaValue
+
+// 2. MACD Calculation
+macdFast     = ta.ema(close, fastMacdLength)
+macdSlow     = ta.ema(close, slowMacdLength)
+macdLine     = macdFast - macdSlow
+macdSignal   = ta.ema(macdLine, signalMacdLength)
+macdHist     = macdLine - macdSignal
+
+// 3. ATR
+atrValue     = ta.atr(atrPeriod)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ░░░░░ ENTRY LOGIC
+// ──────────────────────────────────────────────────────────────────────────────
+bullSignal   = ta.crossover(macdLine, macdSignal)
+bearSignal   = ta.crossunder(macdLine, macdSignal)
+
+// If price is above EMA200 => bullish signals only
+if isBullTrend and bullSignal
+    // Stop & reverse any short
+    if strategy.position_size < 0
+        strategy.close_all("Reverse to Long")
+    strategy.entry("Long", strategy.long)
+
+// If price is below EMA200 => bearish signals only
+if not isBullTrend and bearSignal
+    // Stop & reverse any long
+    if strategy.position_size > 0
+        strategy.close_all("Reverse to Short")
+    strategy.entry("Short", strategy.short)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ░░░░░ STOP-LOSS & TAKE-PROFIT
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Access current position data
+longPosActive  = strategy.position_size > 0
+shortPosActive = strategy.position_size < 0
+tradeEntryPrice = strategy.position_avg_price
+
+if longPosActive
+    // ATR-based stop below entry
+    longStop = tradeEntryPrice - (atrValue * atrMultiplierSL)
+    // ATR-based take-profit above entry
+    longTarget = useTakeProfit ? (tradeEntryPrice + (atrValue * atrMultiplierTP)) : na
+    // Single-line strategy.exit()
+    strategy.exit("Exit Long", "Long", stop=longStop, limit=longTarget)
+
+if shortPosActive
+    // ATR-based stop above entry
+    shortStop = tradeEntryPrice + (atrValue * atrMultiplierSL)
+    // ATR-based take-profit below entry
+    shortTarget = useTakeProfit ? (tradeEntryPrice - (atrValue * atrMultiplierTP)) : na
+    // Single-line strategy.exit()
+    strategy.exit("Exit Short", "Short", stop=shortStop, limit=shortTarget)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ░░░░░ PLOTTING (OPTIONAL)
+// ──────────────────────────────────────────────────────────────────────────────
+plot(emaValue, color=color.new(color.yellow, 0), linewidth=2, title="EMA 200")
+
+// Optional MACD window
+macdLinePlot   = plot(macdLine, color=color.green, title="MACD")
+macdSignalPlot = plot(macdSignal, color=color.red, title="Signal")
+plot(macdHist, style=plot.style_columns, color=(macdHist >= 0 ? color.new(color.green, 50) : color.new(color.red, 50)), title="MACD Histogram")
+
+// Debug: Hide ATR if not needed
+plot(atrValue, title="ATR (hidden)", color=color.new(color.blue, 80), display=display.none)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ░░░░░ ALERTS (OPTIONAL)
+// ──────────────────────────────────────────────────────────────────────────────
+alertcondition(bullSignal and isBullTrend, title="Bullish Setup", message="MACD Cross Up & Above EMA200")
+alertcondition(bearSignal and not isBullTrend, title="Bearish Setup", message="MACD Cross Down & Below EMA200")
+
+

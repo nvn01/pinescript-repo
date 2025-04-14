@@ -1,0 +1,340 @@
+//@version=5
+strategy("Enhanced Smart Money Strategy", overlay=true, max_lines_count=500, max_labels_count=500, 
+         process_orders_on_close=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+//---------------------------------------------------------------------------------------------------------------------
+// Input Parameters
+//---------------------------------------------------------------------------------------------------------------------
+len = input(50, 'CHoCH Detection Period')
+shortLen = input(3, 'IDM Detection Period')
+
+// Risk Management Parameters
+atrPeriod = input.int(14, "ATR Period", minval=1, maxval=50)
+atrMultiplierSL = input.float(2.0, "ATR Multiplier for Stop Loss", minval=0.5, maxval=5.0)
+atrMultiplierTP = input.float(3.0, "ATR Multiplier for Take Profit", minval=0.5, maxval=10.0)
+volumeThreshold = input.float(1.5, "Volume Threshold Multiplier", minval=1.0, maxval=3.0)
+
+// Signal Quality Filters
+useRSIFilter = input.bool(false, "Use RSI Filter", group="Signal Filters")  // disabled by default now
+rsiLength = input.int(14, "RSI Length", minval=1, maxval=50, group="Signal Filters")
+rsiOverbought = input.int(70, "RSI Overbought Level", minval=50, maxval=100, group="Signal Filters")
+rsiOversold = input.int(30, "RSI Oversold Level", minval=0, maxval=50, group="Signal Filters")
+
+useTrendFilter = input.bool(true, "Use Trend Filter", group="Signal Filters")
+emaPeriod = input.int(50, "EMA Period for Trend", minval=10, maxval=200, group="Signal Filters")
+
+useVolFilter = input.bool(false, "Use Enhanced Volume Filter", group="Signal Filters")  // disabled by default now
+volMultiplier = input.float(1.5, "Volume Spike Threshold", minval=1.0, maxval=5.0, group="Signal Filters")  // reduced from 2.0
+
+useChochQuality = input.bool(false, "Use CHoCH Quality Filter", group="Signal Filters")  // disabled by default now
+chochStrengthThreshold = input.float(0.2, "CHoCH Strength Threshold (%)", minval=0.1, maxval=5.0, step=0.1, group="Signal Filters") / 100  // reduced from 0.5
+
+// Premium Mode
+premiumOnly = input.bool(false, "Premium Signals Only", group="Signal Mode")
+
+// Styling
+bullCss = input(#089981, 'Bullish Elements', group='Style')
+bearCss = input(#ff5252, 'Bearish Elements', group='Style')
+
+//---------------------------------------------------------------------------------------------------------------------
+// Functions
+//---------------------------------------------------------------------------------------------------------------------
+// Swings detection/measurements
+n = bar_index
+
+swings(len)=>
+    var os = 0
+    var int topx = na
+    var int btmx = na
+    
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+
+    os := high[len] > upper ? 0 : low[len] < lower ? 1 : os[1]
+
+    top = os == 0 and os[1] != 0 ? high[len] : na
+    topx := os == 0 and os[1] != 0 ? n[len] : topx
+
+    btm = os == 1 and os[1] != 1 ? low[len] : na
+    btmx := os == 1 and os[1] != 1 ? n[len] : btmx
+
+    [top, topx, btm, btmx]
+
+//---------------------------------------------------------------------------------------------------------------------
+// Indicator Calculations
+//---------------------------------------------------------------------------------------------------------------------
+// RSI for momentum filter
+rsi = ta.rsi(close, rsiLength)
+rsiLong = rsi < rsiOversold
+rsiShort = rsi > rsiOverbought
+
+// Trend identification using EMA
+ema = ta.ema(close, emaPeriod)
+uptrend = close > ema
+downtrend = close < ema
+
+// Volume analysis
+volumeMA = ta.sma(volume, 20)
+volumeSpike = volume > volumeMA * volMultiplier
+highVolume = volume > volumeMA * volumeThreshold
+
+// ATR calculation
+atr = ta.atr(atrPeriod)
+
+//---------------------------------------------------------------------------------------------------------------------
+// Market Structure Detection
+//---------------------------------------------------------------------------------------------------------------------
+[top, topx, btm, btmx] = swings(len)
+[stop, stopx, sbtm, sbtmx] = swings(shortLen)
+
+var os = 0
+var top_crossed = false
+var btm_crossed = false
+
+var float max = na
+var float min = na
+
+var int max_x1 = na
+var int min_x1 = na
+
+var float topy = na
+var float btmy = na
+var stop_crossed = false
+var sbtm_crossed = false    
+
+// Initialize on first bar
+if barstate.isfirst
+    max := high
+    min := low
+    max_x1 := n
+    min_x1 := n
+
+//---------------------------------------------------------------------------------------------------------------------
+// CHoCH Detection
+//---------------------------------------------------------------------------------------------------------------------
+if top
+    topy := top
+    top_crossed := false
+if btm
+    btmy := btm
+    btm_crossed := false
+
+// Test for CHoCH
+if close > topy and not top_crossed
+    os := 1
+    top_crossed := true
+if close < btmy and not btm_crossed
+    os := 0
+    btm_crossed := true
+
+// Measure CHoCH strength
+chochStrength = 0.0
+if os != os[1]
+    if os == 1
+        // Bullish CHoCH - measure the depth of the move
+        chochStrength := (close - btmy) / btmy
+    else
+        // Bearish CHoCH - measure the height of the fall
+        chochStrength := (topy - close) / topy
+
+// Display CHoCH
+var bool chochSignal = false
+var bool strongChoch = false
+if os != os[1]
+    max := high
+    min := low
+    max_x1 := n
+    min_x1 := n
+    stop_crossed := false
+    sbtm_crossed := false
+    chochSignal := true
+    strongChoch := chochStrength > chochStrengthThreshold
+
+    if os == 1
+        line.new(topx, topy, n, topy, color=bullCss, style=line.style_dashed)
+        label.new(int(math.avg(n, topx)), topy, 'CHoCH' + (strongChoch ? '✓' : ''), color=color(na), 
+                 style=label.style_label_down, textcolor=bullCss, size=size.tiny)
+    else
+        line.new(btmx, btmy, n, btmy, color=bearCss, style=line.style_dashed)
+        label.new(int(math.avg(n, btmx)), btmy, 'CHoCH' + (strongChoch ? '✓' : ''), color=color(na), 
+                 style=label.style_label_up, textcolor=bearCss, size=size.tiny)
+else
+    chochSignal := false
+    strongChoch := false
+
+stopy = fixnan(stop)
+sbtmy = fixnan(sbtm)
+
+//---------------------------------------------------------------------------------------------------------------------
+// IDM and Liquidity Sweeps Detection
+//---------------------------------------------------------------------------------------------------------------------
+// Initialize variables
+liquidityGrabHigh = false
+liquidityGrabLow = false
+idmBull = false
+idmBear = false
+bosLong = false
+bosShort = false
+
+// Bullish IDM
+if low < sbtmy and not sbtm_crossed and os == 1 and sbtmy != btmy
+    line.new(sbtmx, sbtmy, n, sbtmy, color=color.gray, style=line.style_dotted)
+    label.new(int(math.avg(n, sbtmx)), sbtmy, 'IDM', color=color(na), style=label.style_label_up, textcolor=color.gray, size=size.tiny)
+    sbtm_crossed := true
+    idmBull := true
+
+// Bullish BOS
+if close > max and sbtm_crossed and os == 1
+    line.new(max_x1, max, n, max, color=bullCss)
+    label.new(int(math.avg(n, max_x1)), max, 'BOS', color=color(na), style=label.style_label_down, textcolor=bullCss, size=size.tiny)
+    sbtm_crossed := false
+    bosLong := true
+
+// Bearish IDM
+if high > stopy and not stop_crossed and os == 0 and stopy != topy
+    line.new(stopx, stopy, n, stopy, color=color.gray, style=line.style_dotted)
+    label.new(int(math.avg(n, stopx)), stopy, 'IDM', color=color(na), style=label.style_label_down, textcolor=color.gray, size=size.tiny)
+    stop_crossed := true
+    idmBear := true
+
+// Bearish BOS
+if close < min and stop_crossed and os == 0
+    line.new(min_x1, min, n, min, color=bearCss)
+    label.new(int(math.avg(n, min_x1)), min, 'BOS', color=color(na), style=label.style_label_up, textcolor=bearCss, size=size.tiny)
+    stop_crossed := false
+    bosShort := true
+
+// Sweeps (Liquidity Grabs)
+if high > max and close < max and os == 1 and n - max_x1 > 1
+    line.new(max_x1, max, n, max, color=color.gray, style=line.style_dotted)
+    label.new(int(math.avg(n, max_x1)), max, 'x', color=color(na), style=label.style_label_down, textcolor=color.gray)
+    liquidityGrabHigh := true
+
+if low < min and close > min and os == 0 and n - min_x1 > 1
+    line.new(min_x1, min, n, min, color=color.gray, style=line.style_dotted)
+    label.new(int(math.avg(n, min_x1)), min, 'x', color=color(na), style=label.style_label_up, textcolor=color.gray)
+    liquidityGrabLow := true
+
+// Trailing max/min
+max := math.max(high, max)
+min := math.min(low, min)
+
+if max > max[1]
+    max_x1 := n
+if min < min[1]
+    min_x1 := n
+
+//---------------------------------------------------------------------------------------------------------------------
+// Signal Quality Assessment
+//---------------------------------------------------------------------------------------------------------------------
+// Basic signal conditions - more lenient to ensure we get some trades
+longBasicSignal = (liquidityGrabLow or idmBull or (os == 1 and close > close[1] and close > close[2])) 
+shortBasicSignal = (liquidityGrabHigh or idmBear or (os == 0 and close < close[1] and close < close[2]))
+
+// Apply filters
+longFiltered = longBasicSignal
+shortFiltered = shortBasicSignal
+
+// RSI Filter - relaxed condition to catch more potential setups
+if useRSIFilter
+    longFiltered := longFiltered and (rsi < 45)  // More lenient than strictly oversold
+    shortFiltered := shortFiltered and (rsi > 55)  // More lenient than strictly overbought
+
+// Trend Filter
+if useTrendFilter
+    longFiltered := longFiltered and uptrend
+    shortFiltered := shortFiltered and downtrend
+
+// Volume Filter - relaxed to require only above average volume, not spikes
+if useVolFilter
+    longFiltered := longFiltered and highVolume
+    shortFiltered := shortFiltered and highVolume
+
+// CHoCH Quality Filter - made optional for filtered signals
+if useChochQuality and chochSignal
+    longFiltered := longFiltered and strongChoch
+    shortFiltered := shortFiltered and strongChoch
+
+// Premium signal definition - simplified to single line to avoid continuation issues
+premiumLongSignal = os == 1 and (liquidityGrabLow or idmBull) and (uptrend and highVolume)
+premiumShortSignal = os == 0 and (liquidityGrabHigh or idmBear) and (downtrend and highVolume)
+
+// Final signal selection
+longSignal = premiumOnly ? premiumLongSignal : longFiltered
+shortSignal = premiumOnly ? premiumShortSignal : shortFiltered
+
+//---------------------------------------------------------------------------------------------------------------------
+// Execute Trades
+//---------------------------------------------------------------------------------------------------------------------
+// Debug signal counter
+var int signalCount = 0
+
+// Position tracking
+var bool inPosition = false
+var string positionType = ""
+
+// Update signal counter
+if longSignal or shortSignal
+    signalCount := signalCount + 1
+
+// Submit entry orders with position management
+if longSignal and (not inPosition or positionType == "short")
+    if inPosition
+        strategy.close("Short")
+    
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long TP/SL", "Long", stop=close - atr * atrMultiplierSL, limit=close + atr * atrMultiplierTP)
+    inPosition := true
+    positionType := "long"
+
+if shortSignal and (not inPosition or positionType == "long")
+    if inPosition
+        strategy.close("Long")
+    
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short TP/SL", "Short", stop=close + atr * atrMultiplierSL, limit=close - atr * atrMultiplierTP)
+    inPosition := true
+    positionType := "short"
+
+// Update position tracking when stopped out
+if inPosition
+    if positionType == "long" and low <= close - atr * atrMultiplierSL
+        inPosition := false
+    else if positionType == "short" and high >= close + atr * atrMultiplierSL
+        inPosition := false
+
+//---------------------------------------------------------------------------------------------------------------------
+// Plots
+//---------------------------------------------------------------------------------------------------------------------
+// Plot significant swing points
+plot(top, 'Swing High', color.new(bearCss, 50), 5, plot.style_circles, offset=-len)
+plot(btm, 'Swing Low', color.new(bullCss, 50), 5, plot.style_circles, offset=-len)
+
+// Plot trend
+plot(ema, "Trend EMA", color=uptrend ? bullCss : bearCss, linewidth=1)
+
+// Plot entry signals
+plotshape(series=longSignal, title="Long Entry", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(series=shortSignal, title="Short Entry", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+
+// Plot component signals
+plotshape(series=liquidityGrabLow, title="Low Sweep", style=shape.xcross, location=location.belowbar, color=color.yellow, size=size.tiny)
+plotshape(series=liquidityGrabHigh, title="High Sweep", style=shape.xcross, location=location.abovebar, color=color.yellow, size=size.tiny)
+plotshape(series=premiumLongSignal, title="Premium Long", style=shape.diamond, location=location.belowbar, color=color.lime, size=size.small)
+plotshape(series=premiumShortSignal, title="Premium Short", style=shape.diamond, location=location.abovebar, color=color.fuchsia, size=size.small)
+
+// Plot signal components for debugging
+plotshape(series=longBasicSignal, title="Basic Long", style=shape.circle, location=location.belowbar, color=color.new(color.blue, 70), size=size.tiny)
+plotshape(series=longFiltered, title="Filtered Long", style=shape.circle, location=location.belowbar, color=color.blue, size=size.tiny)
+
+// Plot RSI levels and market state
+hline(rsiOverbought, "RSI Overbought", color=color.new(color.red, 70))
+hline(rsiOversold, "RSI Oversold", color=color.new(color.green, 70))
+hline(45, "RSI Neutral High", color=color.new(color.red, 85))
+hline(55, "RSI Neutral Low", color=color.new(color.green, 85))
+
+// Show debugging info
+label.new(bar_index, high, "Signals: " + str.tostring(signalCount), color=color.new(color.blue, 80), size=size.tiny)
+
+6 = 2
+8 = 3
