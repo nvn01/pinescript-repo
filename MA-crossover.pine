@@ -1,0 +1,41 @@
+//@version=5
+strategy("EMA Crossover Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10)
+
+// Input parameters for EMAs
+fast_ema_length = input.int(50, title="50-period EMA Length")
+slow_ema_length = input.int(200, title="200-period EMA Length")
+
+// Calculate EMAs
+ema_fast = ta.ema(close, fast_ema_length)
+ema_slow = ta.ema(close, slow_ema_length)
+
+// Crossover conditions
+long_condition = ta.crossover(ema_fast, ema_slow)
+short_condition = ta.crossunder(ema_fast, ema_slow)
+
+// Entry logic
+if (long_condition)
+    strategy.entry("Long", strategy.long)
+    
+if (short_condition)
+    strategy.entry("Short", strategy.short)
+
+// Calculate 1% profit target price
+long_profit_target = strategy.position_avg_price * 1.05
+short_profit_target = strategy.position_avg_price * 0.95
+
+// Exit logic for long position
+if (strategy.position_size > 0)
+    strategy.exit("Take Profit", from_entry="Long", limit=long_profit_target)
+    
+// Exit logic for short position
+if (strategy.position_size < 0)
+    strategy.exit("Take Profit", from_entry="Short", limit=short_profit_target)
+
+// Plot EMAs
+plot(ema_fast, color=color.blue, title="50-period EMA")
+plot(ema_slow, color=color.red, title="200-period EMA")
+
+// Visual signals for long and short
+plotshape(series=long_condition, location=location.belowbar, color=color.green, style=shape.labelup, text="LONG")
+plotshape(series=short_condition, location=location.abovebar, color=color.red, style=shape.labeldown, text="SHORT")
