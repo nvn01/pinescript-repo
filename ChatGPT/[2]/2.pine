@@ -1,0 +1,88 @@
+//@version=4
+strategy("Bollinger Bands + Stochastic RSI with Clear TP/SL", overlay=true, margin_long=100, margin_short=100)
+
+// ----- INPUTS -----
+// Bollinger Bands
+bb_length = input(20, title="BB Length")
+bb_mult = input(2.0, title="BB Multiplier")
+[bb_upper, bb_basis, bb_lower] = bb(close, bb_length, bb_mult)
+plot(bb_upper, color=color.red, linewidth=1, title="Upper Bollinger Band")
+plot(bb_lower, color=color.green, linewidth=1, title="Lower Bollinger Band")
+
+// Stochastic RSI
+k_length = input(14, title="Stochastic RSI %K Length")
+d_length = input(3, title="Stochastic RSI %D Smoothing")
+smoothK = input(3, title="Stochastic RSI Smoothing")
+stoch_rsi_k = sma(stoch(close, k_length, smoothK, d_length), smoothK)
+plot(stoch_rsi_k, title="%K Line", color=color.blue)
+overbought_level = input(80, title="Overbought Level")
+oversold_level = input(20, title="Oversold Level")
+hline(overbought_level, "Overbought", color=color.red)
+hline(oversold_level, "Oversold", color=color.green)
+
+// ATR for TP/SL
+atr_bars = input(14, title="ATR Length")
+atr_mult = input(1.5, title="ATR Multiplier")
+atr = atr(atr_bars)
+risk = input(1.0, title="Risk %") / 100
+
+// ----- CONDITIONS -----
+// Long when price touches lower BB and Stochastic RSI is oversold
+goLong = close <= bb_lower and stoch_rsi_k < oversold_level
+
+// Short when price touches upper BB and Stochastic RSI is overbought
+goShort = close >= bb_upper and stoch_rsi_k > overbought_level
+
+// ------ GET IN/OUT A TRADE ------
+inLongPosition = strategy.position_size > 0
+inShortPosition = strategy.position_size < 0
+notInTrade = strategy.position_size == 0
+
+// ----- MANAGE TP/SL -----
+float long_stop_level = na
+float long_profit_level = na
+long_stop_level := (goLong and notInTrade) ? close - atr * atr_mult : long_stop_level[1]
+long_profit_level := (goLong and notInTrade) ? close + atr * atr_mult : long_profit_level[1]
+
+float short_stop_level = na
+float short_profit_level = na
+short_stop_level := (goShort and notInTrade) ? close + atr * atr_mult : short_stop_level[1]
+short_profit_level := (goShort and notInTrade) ? close - atr * atr_mult : short_profit_level[1]
+
+// Execute buy or sell order
+if goLong and notInTrade
+    size = (strategy.equity * risk) / abs(close - long_stop_level)
+    strategy.entry("Long", strategy.long, qty=size, alert_message="Entry Long")
+else if goShort and notInTrade
+    size = (strategy.equity * risk) / abs(close - short_stop_level)
+    strategy.entry("Short", strategy.short, qty=size, alert_message="Entry Short")
+
+// Set multiple takeprofit and the stoploss for long
+long_sl = abs(strategy.position_avg_price - long_stop_level)
+long_tp1 = long_sl * 1.5
+long_tp2 = long_sl * 2.5
+if inLongPosition
+    strategy.exit("Take Profit 1", "Long", profit=long_tp1, stop=long_stop_level, alert_message="TP1 Long")
+    strategy.exit("Take Profit 2", "Long", profit=long_tp2, stop=long_stop_level, alert_message="TP2 Long")
+    
+// Set multiple takeprofit and the stoploss for short
+short_sl = abs(strategy.position_avg_price - short_stop_level)
+short_tp1 = short_sl * 1.5
+short_tp2 = short_sl * 2.5
+if inShortPosition
+    strategy.exit("Take Profit 1", "Short", profit=short_tp1, stop=short_stop_level, alert_message="TP1 Short")
+    strategy.exit("Take Profit 2", "Short", profit=short_tp2, stop=short_stop_level, alert_message="TP2 Short")
+
+// ----- Plot TP/SL -----
+// Visualize the entry point, TP, and SL levels
+entry_price_plot = plot(strategy.position_avg_price, color=color.white, linewidth=1, title="Entry Price")
+p_long_sl = plot(long_stop_level, color=color.red, linewidth=1, title="Long Stop Loss")
+p_long_tp = plot(long_profit_level, color=color.green, linewidth=1, title="Long Take Profit")
+p_short_sl = plot(short_stop_level, color=color.red, linewidth=1, title="Short Stop Loss")
+p_short_tp = plot(short_profit_level, color=color.green, linewidth=1, title="Short Take Profit")
+
+// Highlight areas for TP/SL
+fill(p_long_sl, entry_price_plot, color=color.red, title="Long SL Area", transp=90)
+fill(p_long_tp, entry_price_plot, color=color.green, title="Long TP Area", transp=90)
+fill(p_short_sl, entry_price_plot, color=color.red, title="Short SL Area", transp=90)
+fill(p_short_tp, entry_price_plot, color=color.green, title="Short TP Area", transp=90)
