@@ -1,8 +1,8 @@
-.png
-.jpg
-.jpeg
-.gif
-.svg
-.ico
-.bmp
-.ttf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.bmp
+*.ttf
