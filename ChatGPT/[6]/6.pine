@@ -1,0 +1,69 @@
+//@version=5
+strategy("Bollinger Bands & RSI Trading Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// Inputs
+length = input.int(20, title="Bollinger Bands Length")
+mult = input.float(2.0, title="Bollinger Bands Multiplier")
+rsi_length = input.int(14, title="RSI Length")
+rsi_overbought = input.float(70.0, title="RSI Overbought Level")
+rsi_oversold = input.float(30.0, title="RSI Oversold Level")
+
+// Risk Management
+risk_percent = input.float(1.0, title="Risk per Trade (%)")
+atr_length = input.int(14, title="ATR Length")
+sl_mult = input.float(1.5, title="Stop Loss ATR Multiplier")
+tp_mult = input.float(2.5, title="Take Profit ATR Multiplier")
+
+// Bollinger Bands
+basis = ta.sma(close, length)
+deviation = ta.stdev(close, length)
+upper_band = basis + mult * deviation
+lower_band = basis - mult * deviation
+
+// RSI
+rsi = ta.rsi(close, rsi_length)
+
+// ATR for position sizing
+atr = ta.atr(atr_length)
+
+// Entry conditions
+long_condition = close < lower_band and rsi < rsi_oversold
+short_condition = close > upper_band and rsi > rsi_overbought
+
+// Position management
+var float entry_price = na
+var float stop_loss = na
+var float take_profit = na
+
+if (strategy.position_size == 0)
+    if (long_condition)
+        entry_price := close
+        stop_loss := entry_price - (atr * sl_mult)
+        take_profit := entry_price + (atr * tp_mult)
+        strategy.entry("Long", strategy.long, qty=strategy.equity * risk_percent / 100 / (entry_price - stop_loss))
+    else if (short_condition)
+        entry_price := close
+        stop_loss := entry_price + (atr * sl_mult)
+        take_profit := entry_price - (atr * tp_mult)
+        strategy.entry("Short", strategy.short, qty=strategy.equity * risk_percent / 100 / (stop_loss - entry_price))
+
+// Exit conditions
+strategy.exit("TP/SL", "Long", stop=stop_loss, limit=take_profit)
+strategy.exit("TP/SL", "Short", stop=stop_loss, limit=take_profit)
+
+// Plots
+plot(basis, color=color.blue, title="Bollinger Basis")
+plot(upper_band, color=color.red, title="Upper Band")
+plot(lower_band, color=color.green, title="Lower Band")
+plot(rsi, color=color.purple, title="RSI", style=plot.style_line)
+
+plotshape(long_condition, title="Long Entry", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(short_condition, title="Short Entry", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+plot(strategy.position_size > 0 ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Long Stop Loss")
+plot(strategy.position_size > 0 ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Long Take Profit")
+plot(strategy.position_size < 0 ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Short Stop Loss")
+plot(strategy.position_size < 0 ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Short Take Profit")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 90) : na, title="Long Position")
+bgcolor(strategy.position_size < 0 ? color.new(color.red, 90) : na, title="Short Position")
