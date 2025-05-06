@@ -1,0 +1,67 @@
+// #27
+// ---------------------------------------------------------------
+//@version=5
+strategy("CCI + EMA Trend Strategy", overlay=true, margin_long=100, margin_short=100, initial_capital=1000)
+
+// Inputs
+cciLength     = input.int(20, "CCI Length", minval=1)
+cciThreshold  = input.int(100, "CCI Threshold", minval=1)
+emaLength     = input.int(50, "EMA Length", minval=1)
+
+// Risk Management
+risk_percent  = input.float(1.0, "Risk per Trade (%)", minval=0.1, maxval=5)
+atrLength     = input.int(14, "ATR Length", minval=1)
+sl_mult       = input.float(2.0, "Stop Loss ATR Multiplier", minval=0.5)
+tp_mult       = input.float(2.5, "Take Profit ATR Multiplier", minval=0.5)
+
+// Indicator Calculations
+cciValue = ta.cci(hlc3, cciLength)
+emaValue = ta.ema(close, emaLength)
+atrValue = ta.atr(atrLength)
+
+// Conditions
+aboveEMA       = close > emaValue
+belowEMA       = close < emaValue
+longCondition  = (cciValue < -cciThreshold) and aboveEMA
+shortCondition = (cciValue > cciThreshold) and belowEMA
+
+// Trade variables
+var float entryPrice = na
+var float stopLoss   = na
+var float takeProfit = na
+
+// Entry
+if strategy.position_size == 0
+    if longCondition
+        entryPrice := close
+        stopLoss   := entryPrice - (atrValue * sl_mult)
+        takeProfit := entryPrice + (atrValue * tp_mult)
+        qtySize    = (strategy.equity * risk_percent / 100) / (entryPrice - stopLoss)
+        strategy.entry("Long", strategy.long, qty=qtySize)
+    
+    if shortCondition
+        entryPrice := close
+        stopLoss   := entryPrice + (atrValue * sl_mult)
+        takeProfit := entryPrice - (atrValue * tp_mult)
+        qtySize    = (strategy.equity * risk_percent / 100) / (stopLoss - entryPrice)
+        strategy.entry("Short", strategy.short, qty=qtySize)
+
+// Exit
+if strategy.position_size > 0
+    strategy.exit("Exit Long", "Long", stop=stopLoss, limit=takeProfit)
+if strategy.position_size < 0
+    strategy.exit("Exit Short", "Short", stop=stopLoss, limit=takeProfit)
+
+// Plot
+plot(emaValue, color=color.yellow, title="EMA")
+plot(cciValue, color=color.blue, title="CCI", offset=50)
+hline(cciThreshold, 'CCI Upper Threshold', color=color.red, linestyle=hline.style_dotted)
+hline(-cciThreshold, 'CCI Lower Threshold', color=color.green, linestyle=hline.style_dotted)
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 80) : strategy.position_size < 0 ? color.new(color.red, 80) : na)
+
+// Alerts
+if longCondition
+    alert("Long Signal - CCI < -Threshold & Price Above EMA", alert.freq_once_per_bar)
+if shortCondition
+    alert("Short Signal - CCI > Threshold & Price Below EMA", alert.freq_once_per_bar)
