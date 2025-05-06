@@ -1,0 +1,79 @@
+//@version=5
+strategy("MACD and RSI Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// Inputs
+fast_length = input.int(12, title="MACD Fast Length")
+slow_length = input.int(26, title="MACD Slow Length")
+signal_length = input.int(9, title="MACD Signal Length")
+
+rsi_length = input.int(14, title="RSI Length")
+rsi_overbought = input.int(70, title="RSI Overbought Level")
+rsi_oversold = input.int(30, title="RSI Oversold Level")
+
+risk_percent = input.float(1.0, title="Risk per Trade (%)")
+atr_length = input.int(14, title="ATR Length")
+sl_mult = input.float(1.5, title="Stop Loss ATR Multiplier")
+tp_mult = input.float(2.0, title="Take Profit ATR Multiplier")
+
+// Moving Average Inputs
+sma_length = input.int(50, title="SMA Length")
+ema_length = input.int(200, title="EMA Length")
+
+// MACD Calculation
+[macd_line, signal_line, _] = ta.macd(close, fast_length, slow_length, signal_length)
+
+// RSI Calculation
+rsi = ta.rsi(close, rsi_length)
+
+// SMA and EMA Calculation
+sma = ta.sma(close, sma_length)
+ema = ta.ema(close, ema_length)
+
+// ATR for position sizing
+atr = ta.atr(atr_length)
+
+// Entry conditions
+long_condition = macd_line > signal_line and rsi < rsi_overbought and rsi > 50 and close > sma and close > ema
+short_condition = macd_line < signal_line and rsi > rsi_oversold and rsi < 50 and close < sma and close < ema
+
+// Position management
+var float entry_price = na
+var float stop_loss = na
+var float take_profit = na
+
+if (strategy.position_size == 0)
+    if (long_condition)
+        entry_price := close
+        stop_loss := entry_price - (atr * sl_mult)
+        take_profit := entry_price + (atr * tp_mult)
+        strategy.entry("Long", strategy.long, qty=strategy.equity * risk_percent / 100 / (entry_price - stop_loss))
+    else if (short_condition)
+        entry_price := close
+        stop_loss := entry_price + (atr * sl_mult)
+        take_profit := entry_price - (atr * tp_mult)
+        strategy.entry("Short", strategy.short, qty=strategy.equity * risk_percent / 100 / (stop_loss - entry_price))
+
+// Exit conditions
+strategy.exit("TP/SL", "Long", stop=stop_loss, limit=take_profit)
+strategy.exit("TP/SL", "Short", stop=stop_loss, limit=take_profit)
+
+// Plots
+plot(macd_line, color=color.blue, title="MACD Line")
+plot(signal_line, color=color.orange, title="Signal Line")
+plot(rsi, color=color.purple, title="RSI")
+hline(rsi_overbought, "Overbought", color=color.red, linestyle=hline.style_dotted)
+hline(rsi_oversold, "Oversold", color=color.green, linestyle=hline.style_dotted)
+
+plot(sma, color=color.blue, title="SMA")
+plot(ema, color=color.red, title="EMA")
+
+plotshape(long_condition, title="Long Entry", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(short_condition, title="Short Entry", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+plot(strategy.position_size > 0 ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Long Stop Loss")
+plot(strategy.position_size > 0 ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Long Take Profit")
+plot(strategy.position_size < 0 ? stop_loss : na, color=color.red, style=plot.style_linebr, linewidth=2, title="Short Stop Loss")
+plot(strategy.position_size < 0 ? take_profit : na, color=color.green, style=plot.style_linebr, linewidth=2, title="Short Take Profit")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 90) : na, title="Long Position")
+bgcolor(strategy.position_size < 0 ? color.new(color.red, 90) : na, title="Short Position")
