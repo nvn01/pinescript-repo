@@ -1,0 +1,67 @@
+
+// #29
+// ---------------------------------------------------------------
+//@version=5
+strategy("Momentum + Stochastic Strategy", overlay=true, margin_long=100, margin_short=100, initial_capital=1000)
+
+// Inputs
+momLength     = input.int(14, "Momentum Length", minval=1)
+stochK        = input.int(14, "Stochastic K Length", minval=1)
+stochD        = input.int(3,  "Stochastic D Length", minval=1)
+stochSmooth   = input.int(3,  "Stochastic Smoothing", minval=1)
+risk_percent  = input.float(1.0, "Risk per Trade (%)", minval=0.1, maxval=5)
+atrLength     = input.int(14, "ATR Length", minval=1)
+sl_mult       = input.float(2.0, "Stop Loss ATR Multiplier", minval=0.5)
+tp_mult       = input.float(3.0, "Take Profit ATR Multiplier", minval=0.5)
+
+// Calculation
+momValue     = ta.mom(close, momLength)
+kValue       = ta.stoch(high, low, close, stochK)
+dValue       = ta.sma(kValue, stochD)
+stochSmoothV = ta.sma(dValue, stochSmooth)
+atrValue     = ta.atr(atrLength)
+
+// Conditions
+longCondition  = (momValue > 0) and ta.crossover(kValue, dValue)
+shortCondition = (momValue < 0) and ta.crossunder(kValue, dValue)
+
+// Trade variables
+var float entryPrice = na
+var float stopLoss   = na
+var float takeProfit = na
+
+// Entries
+if strategy.position_size == 0
+    if longCondition
+        entryPrice := close
+        stopLoss   := entryPrice - (atrValue * sl_mult)
+        takeProfit := entryPrice + (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (entryPrice - stopLoss)
+        strategy.entry("Long", strategy.long, qty=qty)
+
+    if shortCondition
+        entryPrice := close
+        stopLoss   := entryPrice + (atrValue * sl_mult)
+        takeProfit := entryPrice - (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (stopLoss - entryPrice)
+        strategy.entry("Short", strategy.short, qty=qty)
+
+// Exits
+if strategy.position_size > 0
+    strategy.exit("Exit Long", "Long", stop=stopLoss, limit=takeProfit)
+if strategy.position_size < 0
+    strategy.exit("Exit Short", "Short", stop=stopLoss, limit=takeProfit)
+
+// Plots
+plot(momValue, color=color.blue, title="Momentum", offset=50)
+plot(kValue, color=color.green, title="Stochastic %K")
+plot(dValue, color=color.red, title="Stochastic %D")
+plot(stochSmoothV, color=color.orange, title="Stochastic Smooth")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 85) : strategy.position_size < 0 ? color.new(color.red, 85) : na)
+
+// Alerts
+if longCondition
+    alert("Long Signal - Momentum>0 & Stoch Crossup", alert.freq_once_per_bar)
+if shortCondition
+    alert("Short Signal - Momentum<0 & Stoch Crossdown", alert.freq_once_per_bar)
