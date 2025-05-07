@@ -1,0 +1,60 @@
+// #35
+// ---------------------------------------------------------------
+//@version=5
+strategy("Donchian Channel Breakout Strategy", overlay=true, margin_long=100, margin_short=100, initial_capital=1000)
+
+// Inputs
+donchianLen   = input.int(20, "Donchian Channel Length", minval=1)
+risk_percent  = input.float(1.0, "Risk per Trade (%)", minval=0.1, maxval=5)
+atrLength     = input.int(14, "ATR Length", minval=1)
+sl_mult       = input.float(2.0, "Stop Loss ATR Multiplier", minval=0.5)
+tp_mult       = input.float(2.5, "Take Profit ATR Multiplier", minval=0.5)
+
+// Donchian Channels
+donchianHigh = ta.highest(high, donchianLen)
+donchianLow  = ta.lowest(low, donchianLen)
+atrValue     = ta.atr(atrLength)
+
+// Conditions
+longCondition  = close > donchianHigh[1]
+shortCondition = close < donchianLow[1]
+
+// Variables
+var float entryPrice = na
+var float stopLoss   = na
+var float takeProfit = na
+
+// Entry logic
+if strategy.position_size == 0
+    if longCondition
+        entryPrice := close
+        stopLoss   := donchianLow
+        takeProfit := entryPrice + (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (entryPrice - stopLoss)
+        strategy.entry("Long", strategy.long, qty=qty)
+
+    if shortCondition
+        entryPrice := close
+        stopLoss   := donchianHigh
+        takeProfit := entryPrice - (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (stopLoss - entryPrice)
+        strategy.entry("Short", strategy.short, qty=qty)
+
+// Exits
+if strategy.position_size > 0
+    strategy.exit("Exit Long", "Long", stop=stopLoss, limit=takeProfit)
+    
+if strategy.position_size < 0
+    strategy.exit("Exit Short", "Short", stop=stopLoss, limit=takeProfit)
+
+// Plots
+plot(donchianHigh, color=color.red, title="Donchian High")
+plot(donchianLow, color=color.green, title="Donchian Low")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 80) : strategy.position_size < 0 ? color.new(color.red, 80) : na)
+
+// Alerts
+if longCondition
+    alert("Long Signal - Price Break Above Donchian Channel", alert.freq_once_per_bar)
+if shortCondition
+    alert("Short Signal - Price Break Below Donchian Channel", alert.freq_once_per_bar)
