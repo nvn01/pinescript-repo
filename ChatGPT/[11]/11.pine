@@ -1,0 +1,59 @@
+// #28
+// ---------------------------------------------------------------
+//@version=5
+strategy("Double Moving Average Crossover Strategy", overlay=true, margin_long=100, margin_short=100, initial_capital=1000)
+
+// Inputs
+ma1Length     = input.int(50, "MA1 Length", minval=1)
+ma2Length     = input.int(200, "MA2 Length", minval=1)
+risk_percent  = input.float(1.0, "Risk per Trade (%)", minval=0.1, maxval=5)
+atrLength     = input.int(14, "ATR Length", minval=1)
+sl_mult       = input.float(2.0, "Stop Loss ATR Multiplier", minval=0.5)
+tp_mult       = input.float(2.0, "Take Profit ATR Multiplier", minval=0.5)
+
+// Calculations
+ma1      = ta.sma(close, ma1Length)
+ma2      = ta.sma(close, ma2Length)
+atrValue = ta.atr(atrLength)
+
+// Conditions
+crossOver  = ta.crossover(ma1, ma2)
+crossUnder = ta.crossunder(ma1, ma2)
+
+// Variables
+var float entryPrice = na
+var float stopLoss   = na
+var float takeProfit = na
+
+// Entry logic
+if strategy.position_size == 0
+    if crossOver
+        entryPrice := close
+        stopLoss   := entryPrice - (atrValue * sl_mult)
+        takeProfit := entryPrice + (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (entryPrice - stopLoss)
+        strategy.entry("Long", strategy.long, qty=qty)
+    if crossUnder
+        entryPrice := close
+        stopLoss   := entryPrice + (atrValue * sl_mult)
+        takeProfit := entryPrice - (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (stopLoss - entryPrice)
+        strategy.entry("Short", strategy.short, qty=qty)
+
+// Exit
+if strategy.position_size > 0
+    strategy.exit("Exit Long", "Long", stop=stopLoss, limit=takeProfit)
+if strategy.position_size < 0
+    strategy.exit("Exit Short", "Short", stop=stopLoss, limit=takeProfit)
+
+// Plot
+plot(ma1, color=color.blue, title="MA1")
+plot(ma2, color=color.orange, title="MA2")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 85) : strategy.position_size < 0 ? color.new(color.red, 85) : na)
+
+// Alerts
+if crossOver
+    alert("Long Signal - MA1 Crossover MA2", alert.freq_once_per_bar)
+if crossUnder
+    alert("Short Signal - MA1 Crossunder MA2", alert.freq_once_per_bar)
