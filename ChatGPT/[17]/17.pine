@@ -1,0 +1,112 @@
+//@version=5
+strategy("Bollinger + RSI Breakout with Partial Exits", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bbLength       = input.int(20,   "BB Length",       minval=1)
+bbMult         = input.float(2.0,"BB StdDev Mult",  minval=0.1, step=0.1)
+
+rsiLength      = input.int(14,   "RSI Length",      minval=1)
+longRsiThresh  = input.int(55,   "RSI Threshold (Long) [>]",   tooltip="Enter long if RSI is above this")
+shortRsiThresh = input.int(45,   "RSI Threshold (Short) [<]",  tooltip="Enter short if RSI is below this")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BOLLINGER BANDS CALC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+basis   = ta.sma(close, bbLength)
+dev     = bbMult * ta.stdev(close, bbLength)
+bbUpper = basis + dev
+bbLower = basis - dev
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RSI CALC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+myRsi   = ta.rsi(close, rsiLength)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CONDITIONS FOR ENTRY
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 1) Long if price crosses above BB upper AND RSI > longRsiThresh
+// 2) Short if price crosses below BB lower AND RSI < shortRsiThresh
+
+longCondition  = ta.crossover(close, bbUpper)  and (myRsi > longRsiThresh)
+shortCondition = ta.crossunder(close, bbLower) and (myRsi < shortRsiThresh)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// STOP-AND-REVERSE LOGIC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if longCondition
+    // If we are short, close out that position first (stop & reverse)
+    if strategy.position_size < 0
+        strategy.close_all("ReverseToLong")
+    // Enter new Long
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    // If we are long, close out that position first (stop & reverse)
+    if strategy.position_size > 0
+        strategy.close_all("ReverseToShort")
+    // Enter new Short
+    strategy.entry("Short", strategy.short)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PARTIAL EXIT (2 TARGETS) USING R-BASED SYSTEM
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// We'll define R = difference from entry to a "stop" (prev bar's low/high).
+// Then partial exits at 1R and 2R, each 50%.
+
+var float stopPriceLong   = na
+var float tp1PriceLong    = na
+var float tp2PriceLong    = na
+var float stopPriceShort  = na
+var float tp1PriceShort   = na
+var float tp2PriceShort   = na
+
+// Detect new Long position just opened
+newLongEntered  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+// Detect new Short position just opened
+newShortEntered = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+// For new Long
+if newLongEntered
+    stopPriceLong := low[1]
+    float entryL  = strategy.position_avg_price
+    float riskL   = entryL - stopPriceLong
+    tp1PriceLong  := entryL + riskL
+    tp2PriceLong  := entryL + 2.0 * riskL
+
+// For new Short
+if newShortEntered
+    stopPriceShort := high[1]
+    float entryS   = strategy.position_avg_price
+    float riskS    = stopPriceShort - entryS
+    tp1PriceShort  := entryS - riskS
+    tp2PriceShort  := entryS - 2.0 * riskS
+
+// If we have a long, place 2 partial-exit orders
+if strategy.position_size > 0
+    strategy.exit("Long P1 (50%)", "Long", stop=stopPriceLong, limit=tp1PriceLong, qty_percent=50)
+    strategy.exit("Long P2 (50%)", "Long", stop=stopPriceLong, limit=tp2PriceLong, qty_percent=50)
+
+// If we have a short, place 2 partial-exit orders
+if strategy.position_size < 0
+    strategy.exit("Short P1 (50%)", "Short", stop=stopPriceShort, limit=tp1PriceShort, qty_percent=50)
+    strategy.exit("Short P2 (50%)", "Short", stop=stopPriceShort, limit=tp2PriceShort, qty_percent=50)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PLOTTING (OPTIONAL)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(basis,   color=color.new(color.blue, 0),   title="BB Basis")
+plot(bbUpper, color=color.new(color.green, 0),  title="BB Upper")
+plot(bbLower, color=color.new(color.red,   0),  title="BB Lower")
+
+plot(myRsi, color=color.new(color.yellow, 0), title="RSI", display=display.pane)
+hline(longRsiThresh,  "RSI Long Thrshld",  color=color.new(color.white, 50))
+hline(shortRsiThresh, "RSI Short Thrshld", color=color.new(color.white, 50))
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ALERTS (OPTIONAL)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(longCondition,  title="Long Breakout",  message="BB Breakout Up + RSI Confirmed")
+alertcondition(shortCondition, title="Short Breakout", message="BB Breakout Down + RSI Confirmed")
