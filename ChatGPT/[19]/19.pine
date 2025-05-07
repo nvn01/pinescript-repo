@@ -1,0 +1,162 @@
+//@version=5
+strategy("ALMA + TSI + Fractal Stop Strategy",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ALMA
+almaLength     = input.int(14,   "ALMA Length",       minval=1)
+almaOffset     = input.float(0.85,"ALMA Offset [0..1]",minval=0, maxval=1, tooltip="Smoothing offset, typically between 0 and 1")
+almaSigma      = input.float(6.0, "ALMA Sigma",        minval=0.1, step=0.1)
+
+// TSI
+tsiLongThreshold  = input.float( 0.0, "TSI Long Threshold",  tooltip="Go Long if TSI crosses above this", step=0.1)
+tsiShortThreshold = input.float( 0.0, "TSI Short Threshold", tooltip="Go Short if TSI crosses below this", step=0.1)
+
+// Fractal Stop
+fractalLeftBars  = input.int(2,   "Fractal Left Bars",  minval=1, tooltip="Number of bars to the left for Bill Williams fractal detection")
+fractalRightBars = input.int(2,   "Fractal Right Bars", minval=1, tooltip="Number of bars to the right for Bill Williams fractal detection")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 1) ARNAUD LEGOUX MOVING AVERAGE (ALMA) ───────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Formula reference:
+//    ALMA = Σ( w(i) * price[i] ) / Σ(w(i))
+// where w(i) depends on the normal distribution around an offset within the length.
+//
+// We'll implement a standard ALMA approach:
+
+fALMA(_src, _length, _offset, _sigma) =>
+    // If length = 1, just return the source
+    // to avoid division-by-zero or weird array indexing
+    if _length <= 1
+        _src
+    else
+        m     = _offset * ( _length - 1 )
+        s     = _length / _sigma
+        sumUp = 0.0
+        sumW  = 0.0
+        for i = 0 to _length - 1
+            // Weight for position i
+            di    = ( i - m )
+            w     = math.exp( -(di * di) / ( 2 * s * s ) )
+            price = _src[ _length - 1 - i ]
+            sumUp += price * w
+            sumW  += w
+        almaValue = sumUp / sumW
+        almaValue
+
+almaVal = fALMA(close, almaLength, almaOffset, almaSigma)
+// We consider the market "bullish" if close is above ALMA, else "bearish"
+isBull = close > almaVal
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 2) TRUE STRENGTH INDEX (TSI) ─────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// The TSI is commonly computed as the double-smoothed momentum of price changes.
+// We'll implement a standard version with default smoothing or we can do the built-in.
+
+fTSI(_src, _rShort, _rLong) =>
+    // rShort & rLong are short/long smoothing factors. 
+    // We'll pick something typical, e.g. TSI(25,13) or TSI(13,7).
+    // For demonstration, let's do 13,7 as a default inside the function.
+    // You can adjust or create inputs if you want more control.
+    rShortVal = 13
+    rLongVal  = 7
+    diff      = ta.change(_src)
+    smDiffS   = ta.ema( ta.ema(diff, rShortVal), rLongVal )
+    smAbsDiff = ta.ema( ta.ema(math.abs(diff), rShortVal), rLongVal )
+    tsiVal    = smAbsDiff == 0 ? 0 : 100 * ( smDiffS / smAbsDiff )
+    tsiVal
+
+tsiValue = fTSI(close, 13, 7)
+
+// We define "go long" if TSI crosses above the user-chosen threshold
+// And "go short" if TSI crosses below that threshold
+longSignal  = ta.crossover(tsiValue,  tsiLongThreshold)  and isBull
+shortSignal = ta.crossunder(tsiValue, tsiShortThreshold) and not isBull
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 3) FRACTAL TRAILING STOP ────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Bill Williams fractals for High: pivot with 'fractalLeftBars' bars on left & 'fractalRightBars' on right
+// Similarly for fractal Low.
+//
+// We'll store the *most recent* fractal High for short stops, fractal Low for long stops.
+
+fractalHigh = ta.pivothigh(fractalLeftBars, fractalRightBars)
+fractalLow  = ta.pivotlow(fractalLeftBars, fractalRightBars)
+
+// We'll keep track of the last known fractal high and low in persistent variables:
+var float lastFracHigh = na
+var float lastFracLow  = na
+
+// Update them when new fractals appear
+if not na(fractalHigh)
+    lastFracHigh := fractalHigh
+
+if not na(fractalLow)
+    lastFracLow := fractalLow
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 4) ENTRY LOGIC + STOP & REVERSE ─────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if longSignal
+    // If we are short, close that short first (stop & reverse)
+    if strategy.position_size < 0
+        strategy.close_all("ReverseToLong")
+    strategy.entry("Long", strategy.long)
+
+if shortSignal
+    // If we are long, close that long first (stop & reverse)
+    if strategy.position_size > 0
+        strategy.close_all("ReverseToShort")
+    strategy.entry("Short", strategy.short)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 5) FRACTAL-BASED STOP ───────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// If we are long, place a stop at the last fractal Low (most recent pivot low).
+// If we are short, place a stop at the last fractal High (most recent pivot high).
+
+longPos  = strategy.position_size > 0
+shortPos = strategy.position_size < 0
+
+if longPos and not na(lastFracLow)
+    strategy.exit("Exit Long", "Long", stop=lastFracLow, comment="Fractal Stop")
+
+if shortPos and not na(lastFracHigh)
+    strategy.exit("Exit Short", "Short", stop=lastFracHigh, comment="Fractal Stop")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── PLOTTING ─────────────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// 1) ALMA
+plot(almaVal, color=color.new(color.yellow, 0), title="ALMA", linewidth=2)
+
+// 2) TSI in separate pane
+plot(tsiValue, color=color.new(color.lime, 0), title="TSI", display=display.pane)
+hline(tsiLongThreshold,  "TSI Long Thr",  color=color.new(color.white, 70))
+hline(tsiShortThreshold, "TSI Short Thr", color=color.new(color.white, 70))
+
+// 3) Plot last fractal lines for debugging (optional)
+plot(lastFracHigh, title="Last Fractal High", color=color.new(color.red, 50), style=plot.style_circles)
+plot(lastFracLow,  title="Last Fractal Low",  color=color.new(color.green, 50), style=plot.style_circles)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── ALERTS (OPTIONAL) ────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+alertcondition(longSignal,  title="TSI Long Signal",  message="ALMA is bullish + TSI crossed above threshold.")
+alertcondition(shortSignal, title="TSI Short Signal", message="ALMA is bearish + TSI crossed below threshold.")
