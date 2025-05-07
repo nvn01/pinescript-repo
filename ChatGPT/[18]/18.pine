@@ -1,0 +1,133 @@
+//@version=5
+strategy("Hull MA + Williams %R (Manual) + ATR Trailing Stop", 
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+hmaLength   = input.int(55,  "Hull MA Length", minval=1)
+wprLength   = input.int(14,  "Williams %R Length", minval=1)
+wprLongThr  = input.int(-20, "Williams %R Long Threshold",  tooltip="Go long if %R crosses above this level")
+wprShortThr = input.int(-80, "Williams %R Short Threshold", tooltip="Go short if %R crosses below this level")
+
+atrPeriod   = input.int(14,  "ATR Period", minval=1)
+atrMult     = input.float(2, "ATR Multiplier for Trailing Stop")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── HULL MOVING AVERAGE (HMA) ────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Standard formula for Hull MA:
+//     HMA(L) = WMA(2 * WMA(src, L/2) - WMA(src, L), sqrt(L))
+//
+// Here we do an approximate WMA using a double EMA approach for demonstration.
+// If you prefer a more accurate WMA, you can code it directly.
+
+f_wma(_src, _length) =>
+    // Quick approximation: WMA can be emulated by double EMA
+    // This is *not* the perfect WMA, but for demonstration it often suffices.
+    ta.ema(_src, _length * 2 - 1)  
+
+hullma(_src, _length) =>
+    half_len = math.round(_length * 0.5)
+    sqrt_len = math.round(math.sqrt(_length))
+    wma1 = f_wma(_src, half_len)
+    wma2 = f_wma(_src, _length)
+    hull_raw = 2.0 * wma1 - wma2
+    hma = f_wma(hull_raw, sqrt_len)
+    hma
+
+hullVal  = hullma(close, hmaLength)
+isBull   = close > hullVal
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── MANUAL WILLIAMS %R ───────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// Williams %R formula (range from -0 to -100):
+//
+//   Williams %R = -100 * (highestHigh - close) / (highestHigh - lowestLow)
+//
+//   We compute highestHigh, lowestLow over wprLength bars.
+
+highestHigh = ta.highest(high, wprLength)
+lowestLow   = ta.lowest(low,  wprLength)
+myWpr       = -100 * (highestHigh - close) / (highestHigh - lowestLow)
+
+// For "long" signals, we watch if WPR crosses above (e.g.) -20
+// For "short" signals, we watch if WPR crosses below (e.g.) -80
+longSignal  = ta.crossover(myWpr, wprLongThr)   and isBull
+shortSignal = ta.crossunder(myWpr, wprShortThr) and not isBull
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── ENTRY LOGIC (STOP & REVERSE) ─────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if longSignal
+    if strategy.position_size < 0
+        strategy.close_all("ReverseToLong")
+    strategy.entry("Long", strategy.long)
+
+if shortSignal
+    if strategy.position_size > 0
+        strategy.close_all("ReverseToShort")
+    strategy.entry("Short", strategy.short)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── ATR-BASED TRAILING STOP (NO FIXED TP) ───────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+atrVal  = ta.atr(atrPeriod)
+
+var float trailStopLong  = na
+var float trailStopShort = na
+
+longPosActive  = strategy.position_size > 0
+shortPosActive = strategy.position_size < 0
+
+// Detect new Long
+newLong = longPosActive and strategy.position_size[1] <= 0
+if newLong
+    trailStopLong := close - atrVal * atrMult
+
+// Detect new Short
+newShort = shortPosActive and strategy.position_size[1] >= 0
+if newShort
+    trailStopShort := close + atrVal * atrMult
+
+// Update trailing stop for Long
+if longPosActive
+    newStop = close - atrVal * atrMult
+    // Trailing stop only moves up
+    trailStopLong := math.max(trailStopLong, newStop)
+    strategy.exit("Exit Long", "Long", stop=trailStopLong, comment="ATR Trail")
+
+// Update trailing stop for Short
+if shortPosActive
+    newStop = close + atrVal * atrMult
+    // Trailing stop only moves down
+    trailStopShort := math.min(trailStopShort, newStop)
+    strategy.exit("Exit Short", "Short", stop=trailStopShort, comment="ATR Trail")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── PLOTS ────────────────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(hullVal, color=color.new(color.teal, 0), linewidth=2, title="Hull MA")
+
+plot(trailStopLong,  title="TrailStop Long",  style=plot.style_line, color=color.new(color.green,  50))
+plot(trailStopShort, title="TrailStop Short", style=plot.style_line, color=color.new(color.red,    50))
+
+// Plot Williams %R in separate window
+plot(myWpr, title="Williams %R (Manual)", color=color.yellow, display=display.pane)
+hline(wprLongThr,  'WPR Long Thr',  color=color.new(color.green, 50))
+hline(wprShortThr, 'WPR Short Thr', color=color.new(color.red,   50))
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── ALERT CONDITIONS (OPTIONAL) ──────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(longSignal,  title="Long Signal",  message="HMA is bullish + WPR cross above threshold.")
+alertcondition(shortSignal, title="Short Signal", message="HMA is bearish + WPR cross below threshold.")
