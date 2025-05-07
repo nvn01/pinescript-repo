@@ -1,0 +1,69 @@
+// #30
+// ---------------------------------------------------------------
+//@version=5
+strategy("Ichimoku Breakout Strategy", overlay=true, margin_long=100, margin_short=100, initial_capital=1000)
+
+// Inputs
+conversionLen = input.int(9, "Conversion Line Length")
+baseLen       = input.int(26, "Base Line Length")
+laggingSpan   = input.int(52, "Lagging Span")
+displacement  = input.int(26, "Displacement")
+risk_percent  = input.float(1.0, "Risk per Trade (%)", minval=0.1, maxval=5)
+atrLength     = input.int(14, "ATR Length", minval=1)
+sl_mult       = input.float(1.5, "Stop Loss ATR Multiplier", minval=0.5)
+tp_mult       = input.float(2.5, "Take Profit ATR Multiplier", minval=0.5)
+
+// Ichimoku calculations
+conversionLine = (ta.highest(high, conversionLen) + ta.lowest(low, conversionLen)) / 2
+baseLine       = (ta.highest(high, baseLen) + ta.lowest(low, baseLen)) / 2
+spanA          = (conversionLine + baseLine) / 2
+spanB          = (ta.highest(high, laggingSpan) + ta.lowest(low, laggingSpan)) / 2
+cloudTop       = math.max(spanA, spanB)
+cloudBottom    = math.min(spanA, spanB)
+
+// ATR for risk
+atrValue = ta.atr(atrLength)
+
+// Entry conditions
+bullishSignal   = close > cloudTop and close > conversionLine and close > baseLine
+bearishSignal   = close < cloudBottom and close < conversionLine and close < baseLine
+
+// Variables
+var float entryPrice = na
+var float stopLoss   = na
+var float takeProfit = na
+
+// Entry logic
+if strategy.position_size == 0
+    if bullishSignal
+        entryPrice := close
+        stopLoss   := entryPrice - (atrValue * sl_mult)
+        takeProfit := entryPrice + (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (entryPrice - stopLoss)
+        strategy.entry("Long", strategy.long, qty=qty)
+    if bearishSignal
+        entryPrice := close
+        stopLoss   := entryPrice + (atrValue * sl_mult)
+        takeProfit := entryPrice - (atrValue * tp_mult)
+        qty        = (strategy.equity * risk_percent / 100) / (stopLoss - entryPrice)
+        strategy.entry("Short", strategy.short, qty=qty)
+
+// Exit
+if strategy.position_size > 0
+    strategy.exit("Exit Long", "Long", stop=stopLoss, limit=takeProfit)
+if strategy.position_size < 0
+    strategy.exit("Exit Short", "Short", stop=stopLoss, limit=takeProfit)
+
+// Plot Ichimoku lines
+plot(conversionLine, color=color.orange, title="Conversion Line")
+plot(baseLine, color=color.blue, title="Base Line")
+plot(spanA, color=color.green, title="Span A")
+plot(spanB, color=color.red, title="Span B")
+
+bgcolor(strategy.position_size > 0 ? color.new(color.green, 85) : strategy.position_size < 0 ? color.new(color.red, 85) : na)
+
+// Alerts
+if bullishSignal
+    alert("Long Signal - Ichimoku Bullish Breakout", alert.freq_once_per_bar)
+if bearishSignal
+    alert("Short Signal - Ichimoku Bearish Breakdown", alert.freq_once_per_bar)
