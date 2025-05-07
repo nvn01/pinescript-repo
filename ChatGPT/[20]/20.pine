@@ -1,0 +1,144 @@
+//@version=5
+strategy("WMA + MACD + Parabolic SAR & Partial Exit",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+wmaLen           = input.int(50,  "WMA Length (Trend)")
+fastMacdLen      = input.int(12,  "MACD Fast Length")
+slowMacdLen      = input.int(26,  "MACD Slow Length")
+signalMacdLen    = input.int(9,   "MACD Signal Length")
+
+// If you want to tweak Parabolic SAR settings
+psarStart        = input.float(0.02, "Parabolic SAR Start", minval=0.0001, step=0.001)
+psarIncrement    = input.float(0.02, "Parabolic SAR Increment", minval=0.0001, step=0.001)
+psarMax          = input.float(0.2,  "Parabolic SAR Max", minval=0.0001, step=0.001)
+
+// Partial exit R multiple
+rMultipleTP      = input.float(2.0,  "Fixed R for Partial TP")
+partialQtyPct    = input.float(50.0, "Partial Exit %", minval=1, maxval=99, tooltip="Close this percent of position at 2R.")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 1) WMA TREND FILTER ─────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+wmaVal  = ta.wma(close, wmaLen)
+isBull  = close > wmaVal
+isBear  = close < wmaVal
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 2) MACD CROSS ───────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+macdFast   = ta.ema(close, fastMacdLen)   // Some folks use EMA for MACD
+macdSlow   = ta.ema(close, slowMacdLen)
+macdLine   = macdFast - macdSlow
+macdSignal = ta.ema(macdLine, signalMacdLen)
+macdHist   = macdLine - macdSignal
+
+// We want a bullish entry if MACD crosses above signal while trend is bull
+longSignal  = ta.crossover(macdLine, macdSignal) and isBull
+// Bearish entry if MACD crosses below signal while trend is bear
+shortSignal = ta.crossunder(macdLine, macdSignal) and isBear
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 3) STOP & REVERSE LOGIC ─────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if longSignal
+    // If currently short, close that
+    if strategy.position_size < 0
+        strategy.close_all("ReverseToLong")
+    // Enter new Long
+    strategy.entry("Long", strategy.long)
+
+if shortSignal
+    // If currently long, close that
+    if strategy.position_size > 0
+        strategy.close_all("ReverseToShort")
+    // Enter new Short
+    strategy.entry("Short", strategy.short)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 4) PARTIAL EXIT AT 2R ───────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// We'll define "R" as the difference between current bar's close and an
+// approximate stop reference. We’ll do a simple approach: let’s define our
+// initial stop as the previous bar’s low for a long, or high for a short.
+// Then partial exit is at 2*R from entry. This is just a demonstration. 
+//
+// After partial exit, the *final* exit is governed by Parabolic SAR (see next).
+
+var float initStopLong  = na
+var float initStopShort = na
+var float tpPriceLong   = na
+var float tpPriceShort  = na
+
+longPosActive  = strategy.position_size > 0
+shortPosActive = strategy.position_size < 0
+
+// Detect new long position
+newLong = longPosActive and strategy.position_size[1] <= 0
+if newLong
+    initStopLong  := low[1]  // or low of previous bar
+    float riskL   = close - initStopLong
+    float entryL  = strategy.position_avg_price
+    // 2R target => entry + 2*risk 
+    tpPriceLong   := entryL + riskL * rMultipleTP
+
+// Detect new short position
+newShort = shortPosActive and strategy.position_size[1] >= 0
+if newShort
+    initStopShort := high[1]
+    float riskS   = initStopShort - close
+    float entryS  = strategy.position_avg_price
+    // 2R target => entry - 2*risk 
+    tpPriceShort  := entryS - riskS * rMultipleTP
+
+// If long is active, set up partial exit at 2R
+if longPosActive
+    strategy.exit("Long TP Partial", "Long", limit=tpPriceLong, qty_percent=partialQtyPct)
+
+if shortPosActive
+    strategy.exit("Short TP Partial", "Short", limit=tpPriceShort, qty_percent=partialQtyPct)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── 5) PARABOLIC SAR TRAILING STOP ──────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+psarValue = ta.sar(psarStart, psarIncrement, psarMax)
+// We use PSAR as a final stop for whichever position is active. 
+// For a Long, if price crosses below PSAR => exit
+// For a Short, if price crosses above PSAR => exit
+//
+// We'll do it by calling strategy.exit() with "stop" parameter for Long or Short.
+
+if longPosActive
+    // If PSAR is *above* price, we are likely about to exit
+    // We can simply place a stop at that PSAR value
+    strategy.exit("Exit Long PSAR", "Long", stop=psarValue, comment="PSAR Stop")
+
+if shortPosActive
+    // For short, place a buy-stop (cover short) at PSAR
+    strategy.exit("Exit Short PSAR", "Short", stop=psarValue, comment="PSAR Stop")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── PLOTTING ─────────────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Weighted MA
+plot(wmaVal, color=color.new(color.orange, 0), linewidth=2, title="WMA Trend")
+
+// Plot MACD and Signal in a separate window (if desired)
+macdPlot   = plot(macdLine, color=color.lime, title="MACD", display=display.none)
+signalPlot = plot(macdSignal, color=color.red, title="Signal", display=display.none)
+plot(macdHist, style=plot.style_columns, color=(macdHist >= 0 ? color.new(color.lime, 70) : color.new(color.red, 70)), display=display.none, title="MACD Hist")
+
+// Plot PSAR
+plot(psarValue, style=plot.style_circles, color=color.new(color.purple, 0), title="Parabolic SAR")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ─── ALERTS (OPTIONAL) ────────────────────────────────────────────────────────
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(longSignal,  title="MACD Bullish + WMA Up",  message="Enter Long on MACD cross up + WMA filter")
+alertcondition(shortSignal, title="MACD Bearish + WMA Down", message="Enter Short on MACD cross down + WMA filter")
