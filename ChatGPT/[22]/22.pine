@@ -1,0 +1,123 @@
+//@version=5
+strategy("T3 + Stochastic + Bollinger (No Exponents)",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100)
+
+//==================================================================================
+// INPUTS
+//==================================================================================
+t3Length      = input.int(14,   "T3 Length",    minval=1)
+t3Alpha       = input.float(0.7,"T3 Smoothing Factor (0..1)", minval=0.0, maxval=1.0, tooltip="Common default ~0.7")
+stochLengthK  = input.int(14,   "Stochastic %K Length", minval=1)
+stochSmoothD  = input.int(3,    "Stochastic %D Smoothing", minval=1)
+bbLength      = input.int(20,   "Bollinger Length", minval=1)
+bbMult        = input.float(2.0,"Bollinger StdDev Multiplier", minval=0.1, step=0.1)
+partialExitPct= input.float(50.0,"Partial Exit %", minval=1, maxval=99, tooltip="Percent of position closed at partial exit")
+
+//==================================================================================
+// 1) T3 MOVING AVERAGE (TREND FILTER)
+//==================================================================================
+// T3 typically uses 6 layers of EMA and special coefficients. We avoid ** by using math.pow().
+f_t3(source, length, alpha) =>
+    // Build 6 successive EMAs:
+    ema1 = ta.ema(source, length)
+    ema2 = ta.ema(ema1,   length)
+    ema3 = ta.ema(ema2,   length)
+    ema4 = ta.ema(ema3,   length)
+    ema5 = ta.ema(ema4,   length)
+    ema6 = ta.ema(ema5,   length)
+
+    // Use math.pow() for exponents:
+    alpha2 = math.pow(alpha, 2)
+    alpha3 = math.pow(alpha, 3)
+
+    // T3 coefficients (common formula)
+    c1 = -alpha3
+    c2 =  3 * alpha2 + 3 * alpha3
+    c3 = -6 * alpha2 - 3 * alpha3
+    c4 =  1 + 3 * alpha + 3 * alpha2 + alpha3
+
+    // Combine
+    c1*ema6 + c2*ema5 + c3*ema4 + c4*ema3
+
+t3Val = f_t3(close, t3Length, t3Alpha)
+isBull = close > t3Val
+isBear = close < t3Val
+
+//==================================================================================
+// 2) STOCHASTIC OSCILLATOR (FOR ENTRY TRIGGERS)
+//==================================================================================
+// We'll compute %K, then %D. This version checks a standard period for %K = 14 by default.
+hh = ta.highest(high, stochLengthK)
+ll = ta.lowest(low,  stochLengthK)
+k  = 100 * (close - ll) / (hh - ll)
+d  = ta.sma(k, stochSmoothD)
+
+// Bullish entry: T3 is bullish and %K crosses above %D
+bullSignal  = isBull and ta.crossover(k, d)
+// Bearish entry: T3 is bearish and %K crosses below %D
+bearSignal  = isBear and ta.crossunder(k, d)
+
+//==================================================================================
+// 3) STOP & REVERSE LOGIC
+//==================================================================================
+if bullSignal
+    if strategy.position_size < 0
+        strategy.close_all("ReverseToLong")
+    strategy.entry("Long", strategy.long)
+
+if bearSignal
+    if strategy.position_size > 0
+        strategy.close_all("ReverseToShort")
+    strategy.entry("Short", strategy.short)
+
+//==================================================================================
+// 4) BOLLINGER BANDS FOR PARTIAL + FINAL EXIT
+//==================================================================================
+// Standard Bollinger: basis = SMA, upper/lower = ± stdev * multiplier
+basis   = ta.sma(close, bbLength)
+dev     = ta.stdev(close, bbLength) * bbMult
+bbUpper = basis + dev
+bbLower = basis - dev
+
+longPos  = strategy.position_size > 0
+shortPos = strategy.position_size < 0
+
+// PARTIAL EXIT
+//   - For long: if price hits BB upper => partial exit
+//   - For short: if price hits BB lower => partial exit
+if longPos
+    strategy.exit("Long Partial Exit", "Long", limit=bbUpper, qty_percent=partialExitPct)
+if shortPos
+    strategy.exit("Short Partial Exit", "Short", limit=bbLower, qty_percent=partialExitPct)
+
+// FINAL EXIT (TRAILING USING OPPOSITE BAND)
+//   - For long: if price dips below BB lower => exit remainder
+//   - For short: if price rises above BB upper => exit remainder
+if longPos
+    strategy.exit("Long Final Exit", "Long", stop=bbLower, comment="Bollinger Stop")
+if shortPos
+    strategy.exit("Short Final Exit", "Short", stop=bbUpper, comment="Bollinger Stop")
+
+//==================================================================================
+// PLOTTING (OPTIONAL)
+//==================================================================================
+// 1) T3 line
+plot(t3Val, color=color.new(color.orange, 0), linewidth=2, title="T3 MA")
+
+// 2) Bollinger
+plot(basis,   color=color.new(color.blue, 0),   title="BB Basis")
+plot(bbUpper, color=color.new(color.green, 0),  title="BB Upper")
+plot(bbLower, color=color.new(color.red,   0),  title="BB Lower")
+
+// 3) Stochastic (in separate pane)
+plot(k, color=color.yellow, title="Stoch %K", display=display.pane)
+plot(d, color=color.aqua,   title="Stoch %D", display=display.pane)
+
+//==================================================================================
+// ALERTS (OPTIONAL)
+//==================================================================================
+alertcondition(bullSignal,  title="T3+Stoch Bullish", message="T3 up, %K xover %D => Long setup")
+alertcondition(bearSignal,  title="T3+Stoch Bearish", message="T3 down, %K xunder %D => Short setup")
