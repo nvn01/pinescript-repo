@@ -1,0 +1,141 @@
+//@version=5
+strategy("Fisher Transform + QQE + Partial ATR Exit (Renamed 'range')",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 1) INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fisherLen         = input.int(9,    "Fisher Transform Lookback", minval=1)
+qqeRsiLen         = input.int(14,   "QQE RSI Length", minval=1)
+qqeFactor         = input.float(4.5,"QQE Factor",    minval=0.1, step=0.1, tooltip="Often ~4.5 is standard")
+qqeSmooth         = input.int(5,    "QQE Smoothing", minval=1,  tooltip="SMA/EMA smoothing for QQE signals")
+
+stopAtrPeriod     = input.int(14,   "ATR Period for Final Stop", minval=1)
+stopAtrMult       = input.float(2.0,"ATR Multiplier for Final Stop", minval=0.1, step=0.1)
+partialExitRR     = input.float(1.5,"Partial Exit R Multiple", minval=0.1, step=0.1, tooltip="Close partial at 1.5 * R")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 2) FISHER TRANSFORM (TREND FILTER)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// We do a standard approach: transform of (close) over `fisherLen` bars.
+highestHigh    = ta.highest(high, fisherLen)
+lowestLow      = ta.lowest(low, fisherLen)
+priceRange     = highestHigh - lowestLow  // rename from "range" to "priceRange"
+
+normalized     = priceRange == 0 ? 0 : (close - lowestLow) / priceRange * 2 - 1
+clipVal        = math.max(math.min(normalized, 0.999), -0.999)
+fisherRaw      = 0.5 * math.log((1 + clipVal)/(1 - clipVal))
+fisher         = ta.ema(fisherRaw, 1)  // optional smoothing
+isBullFisher   = fisher > 0
+isBearFisher   = fisher < 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 3) QQE (ENTRY SIGNAL)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Simplified QQE: uses RSI - factor * ATR( RSI ) => smoothed
+rsiVal       = ta.rsi(close, qqeRsiLen)
+rsiAtr       = ta.atr(qqeRsiLen)
+alphaFactor  = qqeFactor * rsiAtr / 100
+qqeLineRaw   = rsiVal - alphaFactor
+qqeLine      = ta.ema(qqeLineRaw, qqeSmooth)
+
+// Bullish if RSI crosses above QQE line, while Fisher>0
+bullQqeSignal  = ta.crossover(rsiVal, qqeLine) and isBullFisher
+// Bearish if RSI crosses below QQE line, while Fisher<0
+bearQqeSignal  = ta.crossunder(rsiVal, qqeLine) and isBearFisher
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 4) STOP & REVERSE ENTRY LOGIC
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if bullQqeSignal
+    if strategy.position_size < 0
+        strategy.close_all("ReverseToLong")
+    strategy.entry("Long", strategy.long)
+
+if bearQqeSignal
+    if strategy.position_size > 0
+        strategy.close_all("ReverseToShort")
+    strategy.entry("Short", strategy.short)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 5) DEFINE STOP & PARTIAL EXITS (R-based + ATR Trailing)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+//
+// We'll define an initial 'stop reference' for new positions as the previous bar's low for a long, or high for a short. 
+// Then R = entryPrice - stopRef (for a long), or stopRef - entryPrice (for a short).
+// A partial exit triggers at 1.5R. Then an ATR-based trailing stop for final exit.
+
+var float initStopLong  = na
+var float initStopShort = na
+var float tpPriceLong   = na
+var float tpPriceShort  = na
+
+longPosActive  = strategy.position_size > 0
+shortPosActive = strategy.position_size < 0
+
+// Detect newly opened long
+newLong = longPosActive and strategy.position_size[1] <= 0
+if newLong
+    initStopLong := low[1]
+    float entryL = strategy.position_avg_price
+    float riskL  = entryL - initStopLong
+    tpPriceLong  := entryL + partialExitRR * riskL
+
+// Newly opened short
+newShort = shortPosActive and strategy.position_size[1] >= 0
+if newShort
+    initStopShort := high[1]
+    float entryS  = strategy.position_avg_price
+    float riskS   = initStopShort - entryS
+    tpPriceShort  := entryS - partialExitRR * riskS
+
+// Place partial exits at 1.5R
+if longPosActive
+    strategy.exit("Long Partial", "Long", limit=tpPriceLong, qty_percent=50)
+
+if shortPosActive
+    strategy.exit("Short Partial", "Short", limit=tpPriceShort, qty_percent=50)
+
+// ATR trailing for final exit
+atrVal = ta.atr(stopAtrPeriod)
+if longPosActive
+    float trailingStopLong = close - atrVal * stopAtrMult
+    var float savedStopLong = na
+    // On newLong, initialize
+    if newLong
+        savedStopLong := trailingStopLong
+    else
+        if not na(savedStopLong)
+            savedStopLong := math.max(savedStopLong, trailingStopLong)
+
+    strategy.exit("Long Final", "Long", stop=savedStopLong, comment="ATR Trail")
+
+if shortPosActive
+    float trailingStopShort = close + atrVal * stopAtrMult
+    var float savedStopShort = na
+    // On newShort, initialize
+    if newShort
+        savedStopShort := trailingStopShort
+    else
+        if not na(savedStopShort)
+            savedStopShort := math.min(savedStopShort, trailingStopShort)
+
+    strategy.exit("Short Final", "Short", stop=savedStopShort, comment="ATR Trail")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 6) PLOTTING (OPTIONAL)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plot(fisher, color=color.new(color.orange, 0), linewidth=2, title="Fisher Transform")
+
+plot(rsiVal,   color=color.lime, title="RSI", display=display.pane)
+plot(qqeLine,  color=color.red,  title="QQE", display=display.pane)
+plot(atrVal,   title="ATR Debug", color=color.new(color.blue, 80), display=display.none)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7) ALERT CONDITIONS (OPTIONAL)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(bullQqeSignal,  title="Fisher+QQE Bull",  message="Fisher>0 & RSI>QQE => Go Long")
+alertcondition(bearQqeSignal,  title="Fisher+QQE Bear",  message="Fisher<0 & RSI<QQE => Go Short")
